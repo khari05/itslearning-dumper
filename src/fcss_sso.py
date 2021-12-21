@@ -1,32 +1,21 @@
 # a short script to produce a Session object that is authenticated
 # into Forsyth County's ADFS and logged into itslearning
 # - Karthik Hari
-
-import requests
-
-import os
 import re
 from urllib.parse import parse_qs
+import requests
 
 
-HEADERS = {'User-Agent': 'Mozilla/5.0'}
-ITSL_BASE_URL = 'https://forsyth.itslearning.com'
-
-USERNAME = os.environ['USERNAME']
-PASSWORD = os.environ['PASSWORD']
-
-AUTOLOGIN_URL = '/elogin/autologin.aspx'
-
-def getFCSSLoginInfo(itslBaseURL: str, headers):
+def getFCSSLoginInfo(itslLoginUrl: str, headers):
     # Forsyth County's ADFS doesn't have a correct SSL certificate so verify has to be off
     response = requests.get(
-        itslBaseURL + AUTOLOGIN_URL,
+        itslLoginUrl,
         headers=headers,
         verify=False
     )
 
     if response.status_code != 200:
-        raise 'ADFS response Code is not "200 OK"'
+        raise Exception('ADFS response Code is not "200 OK"')
 
     matches = re.search(
         r'action="(https://.*/adfs/ls/)\?(SAMLRequest=.*)"', response.text, flags=re.MULTILINE)
@@ -36,9 +25,9 @@ def getFCSSLoginInfo(itslBaseURL: str, headers):
     return link, params['SAMLRequest'][0], params['RelayState'][0], params['client-request-id'][0]
 
 
-def login(session: requests.Session, itslBaseUrl: str, username: str, password: str):
+def adfsLogin(session: requests.Session, itslBaseUrl: str, username: str, password: str, autoLoginUrl: str):
     loginUrl, SAMLToken, stateToken, clientId = getFCSSLoginInfo(
-        itslBaseUrl,
+        autoLoginUrl.format(itslBaseUrl),
         session.headers
     )
 
@@ -48,7 +37,7 @@ def login(session: requests.Session, itslBaseUrl: str, username: str, password: 
         params={
             'SAMLRequest': SAMLToken,
             'RelayState': stateToken,
-            'client-request-id': clientId,
+            'client-request-id': clientId
         },
         data={
             'UserName': username,
@@ -62,11 +51,11 @@ def login(session: requests.Session, itslBaseUrl: str, username: str, password: 
         error = re.search(
             r'<span id="errorText" for="" aria-live="assertive" role="alert">(.+?)</span>', str(res.content)).groups(1)[0]
         print('ADFS error:', error)
-        return
+        raise ('ADFS error:', error)
 
     # Ask itslearning to automatically login
     res = session.get(
-        itslBaseUrl + AUTOLOGIN_URL,
+        autoLoginUrl.format(itslBaseUrl),
         allow_redirects=True,
         verify=False
     )
@@ -93,15 +82,3 @@ def login(session: requests.Session, itslBaseUrl: str, username: str, password: 
     # print(res.status_code, res.url)
     # f = open("./content", 'wb')
     # f.write(res.content)
-    return
-
-# --- Run Stuff ---
-
-session = requests.Session()
-session.headers.update(HEADERS)
-login(
-    session,
-    itslBaseUrl=ITSL_BASE_URL,
-    username=USERNAME,
-    password=PASSWORD,
-)

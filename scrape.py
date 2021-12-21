@@ -39,7 +39,6 @@ from lxml.html import fromstring, tostring
 from lxml import etree
 
 # Python std lib imports
-import argparse
 import os.path
 import os
 import re
@@ -56,36 +55,15 @@ from urllib.parse import urlparse
 # Requires Python 3.4
 from pathlib import Path
 
+from requests.sessions import session
+
+from src.fcss_sso import adfsLogin
+import src.itslearning_urls as its
+from src.parser import makeParser
+
 # --- SETTINGS ---
 
-parser = argparse.ArgumentParser(description='Download files from itslearning. Check the README for more information.')
-
-parser.add_argument('--output-dir', '-O', dest='output_dir', default=None,
-					help='Defines the directory to output files from. If left empty, the program will prompt.')
-parser.add_argument('--rate-limit-delay', '-R', dest='rate_limit', type=float, default=1,
-					help="Rate limits requests to It's Learning (seconds). Defaults to 1 second.")
-parser.add_argument('--skip-to-course', '-S', dest='skip_to_course', type=int, default=0,
-					help='Skip to a course with a specific index. Useful after a crash. Set to 1 to only skip downloading internal messages.')
-parser.add_argument('--enable-checkpoints', '-C', dest='enable_checkpoints', type=bool, default=False, 
-					help='Save the location of the last element encountered by the dumping process. Useful for quick recovery while debugging, or being able to continue the dumping process at a later date.')
-parser.add_argument('--output-text-extension', '-E', dest='output_extension', default='.html',
-					help='Specifies the extension given to produced plaintext files. Values ought to be either ".html" or ".txt".')
-parser.add_argument('--institution', '-I', dest='institution', default=None, 
-					help='Only dump the content of a single institution site. This value should either be "ntnu" or "hist".')
-parser.add_argument('--list', '-L', dest='do_listing', action='store_true',
-					help='Don\'t dump anything, just list all courses and projects for each institution, along with their IDs.')
-parser.add_argument('--projects-only', '-P', dest='projects_only', action='store_true',
-					help='Only dump projects. No internal messages or courses are saved.')
-parser.add_argument('--courses-only', '-F', dest='courses_only', action='store_true',
-					help='Only dump courses. No internal messages or projects are saved.')
-parser.add_argument('--messages-only', '-M', dest='messaging_only', action='store_true',
-					help='Only dump internal messages. No courses or projects are saved.')
-parser.add_argument('--recreate-dump-dir', '-D', dest='recreate_out_dir', action='store_true',
-					help='Delete the output directory and recreate it (useful for debugging)')
-parser.add_argument('--username', '-U', dest='username', default=None,
-					help='Specify a username to be dumped')
-parser.add_argument('--password', '-Q', dest='password', default=None,
-					help='Specify a password of the user to be dumped')
+parser = makeParser()
 
 args = parser.parse_args()
 
@@ -179,102 +157,10 @@ elif args.recreate_out_dir and os.path.exists(output_folder_name):
 enable_checkpoints = args.enable_checkpoints
 
 # --- CONSTANTS ---
+headers = {'User-Agent': 'Mozilla/5.0'}
 
-innsida = 'https://innsida.ntnu.no'
+institutions = ['forsyth']
 
-feide_base_url = 'https://idp.feide.no/simplesaml/module.php/feide/login.php'
-
-institutions = ['hist', 'ntnu']
-
-itslearning_gateway_url = {
-	'ntnu': 'https://innsida.ntnu.no/sso?target=itslearning',
-	'hist': 'https://hist.itslearning.com/Index.aspx'}
-hist_login_postback_target = 'https://hist.itslearning.com/'
-
-
-itsleaning_course_list = {
-	'ntnu': 'https://ntnu.itslearning.com/Course/AllCourses.aspx', 
-	'hist': 'https://hist.itslearning.com/Course/AllCourses.aspx'}
-itslearning_course_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/ContentArea/ContentArea.aspx?LocationID={}&LocationType={}', 
-	'hist': 'https://hist.itslearning.com/ContentArea/ContentArea.aspx?LocationID={}&LocationType={}'}
-itslearning_login_landing_page = {
-	'ntnu': 'https://ntnu.itslearning.com/DashboardMenu.aspx',
-	'hist': 'https://hist.itslearning.com/DashboardMenu.aspx'}
-itslearning_course_bulletin_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Course/course.aspx?CourseId=', 
-	'hist': 'https://hist.itslearning.com/Course/course.aspx?CourseId='}
-itslearning_project_bulletin_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Project/project.aspx?ProjectId={}&BulletinBoardAll=True', 
-	'hist': 'https://hist.itslearning.com/Project/project.aspx?ProjectId={}&BulletinBoardAll=True'}
-itslearning_bulletin_next_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Bulletins/Page?courseId={}&boundaryLightBulletinId={}&boundaryLightBulletinCreatedTicks={}', 
-	'hist': 'https://hist.itslearning.com/Bulletins/Page?courseId={}&boundaryLightBulletinId={}&boundaryLightBulletinCreatedTicks={}'}
-itslearning_folder_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Folder/processfolder.aspx?FolderID=', 
-	'hist': 'https://hist.itslearning.com/Folder/processfolder.aspx?FolderID='}
-itslearning_file_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/File/fs_folderfile.aspx?FolderFileID=', 
-	'hist': 'https://hist.itslearning.com/File/fs_folderfile.aspx?FolderFileID='}
-itslearning_assignment_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/essay/read_essay.aspx?EssayID=', 
-	'hist': 'https://hist.itslearning.com/essay/read_essay.aspx?EssayID='}
-itslearning_note_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/note/View_Note.aspx?NoteID=', 
-	'hist': 'https://hist.itslearning.com/note/View_Note.aspx?NoteID='}
-itslearning_discussion_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/discussion/list_discussions.aspx?DiscussionID=', 
-	'hist': 'https://hist.itslearning.com/discussion/list_discussions.aspx?DiscussionID='}
-itslearning_weblink_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/weblink/weblink.aspx?WebLinkID=', 
-	'hist': 'https://hist.itslearning.com/weblink/weblink.aspx?WebLinkID='}
-itslearning_weblink_header_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/weblink/weblink_header.aspx?WebLinkID=' , 
-	'hist': 'https://hist.itslearning.com/weblink/weblink_header.aspx?WebLinkID=' }
-itslearning_learning_tool_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/LearningToolElement/ViewLearningToolElement.aspx?LearningToolElementId=', 
-	'hist': 'https://hist.itslearning.com/LearningToolElement/ViewLearningToolElement.aspx?LearningToolElementId='}
-itslearning_comment_service = {
-	'ntnu': 'https://ntnu.itslearning.com/Services/CommentService.asmx/GetOldComments?sourceId={}&sourceType={}&commentId={}&count={}&numberOfPreviouslyReadItemsToDisplay={}&usePersonNameFormatLastFirst={}', 
-	'hist': 'https://hist.itslearning.com/Services/CommentService.asmx/GetOldComments?sourceId={}&sourceType={}&commentId={}&count={}&numberOfPreviouslyReadItemsToDisplay={}&usePersonNameFormatLastFirst={}'}
-itslearning_root_url = {
-	'ntnu': 'https://ntnu.itslearning.com', 
-	'hist': 'https://hist.itslearning.com'}
-itslearning_not_found = {
-	'ntnu': 'https://ntnu.itslearning.com/not_exist.aspx', 
-	'hist': 'https://hist.itslearning.com/not_exist.aspx'}
-itslearning_test_base_url = {
-	'ntnu': 'https://ntnu.itslearning.com/test/view_survey_list.aspx?TestID=', 
-	'hist': 'https://hist.itslearning.com/test/view_survey_list.aspx?TestID='}
-old_messaging_api_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Messages/InternalMessages.aspx?MessageFolderId={}', 
-	'hist': 'https://hist.itslearning.com/Messages/InternalMessages.aspx?MessageFolderId={}'}
-itslearning_picture_url = {
-	'ntnu': 'https://ntnu.itslearning.com/picture/view_picture.aspx?PictureID={}&FolderID=-1&ChildID=-1&DashboardHierarchyID=-1&DashboardName=&ReturnUrl=', 
-	'hist': 'https://hist.itslearning.com/picture/view_picture.aspx?PictureID={}&FolderID=-1&ChildID=-1&DashboardHierarchyID=-1&DashboardName=&ReturnUrl='}
-itslearning_online_test_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Ntt/EditTool/ViewTest.aspx?TestID={}',
-	'hist': 'https://hist.itslearning.com/Ntt/EditTool/ViewTest.aspx?TestID={}'}
-itslearning_online_test_details_postback_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Ntt/EditTool/ViewTestResults.aspx?TestResultId={}',
-	'hist': 'https://hist.itslearning.com/Ntt/EditTool/ViewTestResults.aspx?TestResultId={}'}
-itslearning_new_messaging_api_url = {
-	'ntnu': 'https://ntnu.itslearning.com/restapi/personal/instantmessages/messagethreads/v1?threadPage={}&maxThreadCount=15',
-	'hist': 'https://hist.itslearning.com/restapi/personal/instantmessages/messagethreads/v1?threadPage={}&maxThreadCount=15'}
-itslearning_all_projects_url = {
-	'ntnu': 'https://ntnu.itslearning.com/Project/AllProjects.aspx',
-	'hist': 'https://hist.itslearning.com/Project/AllProjects.aspx'}
-base64_png_image_url = {
-	'ntnu': 'https://ntnu.itslearning.comdata:image/png;base64,',
-	'hist': 'https://hist.itslearning.comdata:image/png;base64,'}
-base64_jpeg_image_url = {
-	'ntnu': 'https://ntnu.itslearning.comdata:image/jpeg;base64,',
-	'hist': 'https://hist.itslearning.comdata:image/jpeg;base64,'}
-itslearning_unauthorized_url = {
-	'ntnu': 'https://ntnu.itslearning.com/not_authorized.aspx',
-	'hist': 'https://hist.itslearning.com/not_authorized.aspx'}
-
-innsida_login_parameters = {'SessionExpired': 0}
 progress_file_location = os.path.join(os.getcwd(), 'saved_progress_state.txt')
 
 overflow_count = 0
@@ -382,7 +268,7 @@ def download_file(institution, url, destination_directory, session, index=None, 
 		file_download_response = session.get(url, allow_redirects=True)
 	except Exception:
 		# Can occur in a case of an encoded image. If so, dump it.
-		if base64_png_image_url[institution] in url or base64_jpeg_image_url[institution] in url:
+		if its.base64_png_image_url.format(its.root_url[institution]) in url or its.base64_jpeg_image_url.format(its.root_url[institution]) in url:
 			try:
 				extension = url.split(':')[2].split(';')[0].split('/')[1]
 				print('\tDownloaded Base64 encoded {} image'.format(extension).encode('ascii', 'ignore'))
@@ -395,7 +281,7 @@ def download_file(institution, url, destination_directory, session, index=None, 
 			return
 		elif url.startswith('/'):
 			try:
-				file_download_response = session.get(itslearning_root_url[institution] + url, allow_redirects=True)
+				file_download_response = session.get(its.root_url[institution] + url, allow_redirects=True)
 			except Exception:
 				print('FAILED TO DOWNLOAD FILE (INVALID URL):', url.encode('ascii', 'ignore'))
 				return
@@ -522,7 +408,7 @@ def processTest(institution, pathThusFar, testURL, session):
 	try:
 		# If we have access to downloading all results, we do so here.
 		# Since 'we can, grabbing both XLS and HTML reports.'
-		show_result_url = itslearning_root_url[institution] + test_document.get_element_by_id('result')[0].get('href')[2:]
+		show_result_url = its.root_url[institution] + test_document.get_element_by_id('result')[0].get('href')[2:]
 		download_file(institution, show_result_url + '&Type=2', dumpDirectory, session, disableFilenameReencode=False)
 		download_file(institution, show_result_url + '&Type=2&HtmlType=true', dumpDirectory, session, disableFilenameReencode=False)
 		print('\tIt\'s Learning generated report downloaded.')
@@ -550,7 +436,7 @@ def processTest(institution, pathThusFar, testURL, session):
 			entry_name = table_entry_element[0 + index_offset].text_content()
 			entry_date = table_entry_element[1 + index_offset].text_content()
 			try:
-				entry_url = itslearning_root_url[institution] + table_entry_element[2 + index_offset][0].get('href')[2:]
+				entry_url = its.root_url[institution] + table_entry_element[2 + index_offset][0].get('href')[2:]
 			except IndexError:
 				# Happens if you don't have access rights to view the responses.
 				entry_url = None
@@ -590,7 +476,7 @@ def processTest(institution, pathThusFar, testURL, session):
 		next_page_url = html.unescape(next_page_button[0].get('href'))[2:]
 
 		print('\tPage finished, moving on to next page.')
-		test_response = session.get(itslearning_root_url[institution] + next_page_url, allow_redirects = True)
+		test_response = session.get(its.root_url[institution] + next_page_url, allow_redirects = True)
 		test_document = fromstring(test_response.text)
 
 def processNote(institution, pathThusFar, noteURL, session):
@@ -623,7 +509,7 @@ def processWeblink(institution, pathThusFar, weblinkPageURL, link_title, session
 	header_frame = weblink_document.find(".//frame")
 	header_src = header_frame.get('src')
 
-	weblink_header_response = session.get(itslearning_weblink_header_base_url[institution] + header_src.split('=')[1], allow_redirects=True)
+	weblink_header_response = session.get(its.weblink_header_base_url.format(its.root_url[institution]) + header_src.split('=')[1], allow_redirects=True)
 	weblink_header_document = fromstring(weblink_header_response.text)
 
 	link_info_node = weblink_header_document.find_class('frameheaderinfo')[0]
@@ -678,7 +564,7 @@ def processPicture(institution, pathThusFar, pictureURL, session):
 	dumpDirectoryPath = makeDirectories(dumpDirectoryPath)
 
 	image_base_element = picture_document.find_class('itsl-formbox')[0]
-	imageURL = itslearning_root_url[institution] + image_base_element[0][0].get('src')
+	imageURL = its.root_url[institution] + image_base_element[0][0].get('src')
 	download_file(institution, imageURL, dumpDirectoryPath, session)
 
 	description_text = etree.tostring(image_base_element[2], encoding='utf-8')
@@ -750,7 +636,7 @@ def processDiscussionPost(institution, pathThusFar, postURL, postTitle, session)
 
 			# Special case for relative URL's: drop the It's Learning root URL in front of it
 			if not image_URL.startswith('http'):
-				image_URL = itslearning_root_url[institution] + image_URL
+				image_URL = its.root_url[institution] + image_URL
 
 			download_file(institution, image_URL, imageDumpDirectory, session)
 
@@ -798,14 +684,14 @@ def processDiscussionForum(institution, pathThusFar, discussionURL, session):
 				postURL = nextThreadElement[1][0].get('href')
 				postTitle = nextThreadElement[1][0].text
 				try:
-					processDiscussionPost(institution, discussionDumpDirectory, itslearning_root_url[institution] + postURL, postTitle, session)
+					processDiscussionPost(institution, discussionDumpDirectory, its.root_url[institution] + postURL, postTitle, session)
 				except Exception:
 					print('\n\nSTART OF ERROR INFORMATION\n\n\n\n')
 					traceback.print_exc()
 					print('\n\n\n\nEND OF ERROR INFORMATION')
 					print()
 					print('Oh no! The script crashed while trying to download the following discussion post:')
-					print((itslearning_root_url[institution] + postURL).encode('ascii', 'ignore'))
+					print((its.root_url[institution] + postURL).encode('ascii', 'ignore'))
 					print('Some information regarding the error is shown above.')
 					print('Please mail a screenshot of this information to bart.van.blokland@ntnu.no, and I can see if I can help you fix it.')
 					print('Would you like to skip this item and move on?')
@@ -838,7 +724,7 @@ def processAssignment(institution, pathThusFar, assignmentURL, session):
 	print("\tDownloading assignment:", assignmentURL.encode('ascii', 'ignore'))
 	assignment_response = session.get(assignmentURL, allow_redirects=True)
 
-	if itslearning_unauthorized_url[institution] in assignment_response.url:
+	if its.unauthorized_url[institution] in assignment_response.url:
 		print('\t Access denied. Skipping.')
 		return
 
@@ -1056,7 +942,7 @@ def processAssignment(institution, pathThusFar, assignmentURL, session):
 				# Column 7: Show (link to details page)
 				try:
 					# Exploit that the last entry is always the details link
-					details_page_url = itslearning_root_url[institution] + submission_element[len(submission_element) - 1][0].get('href')
+					details_page_url = its.root_url[institution] + submission_element[len(submission_element) - 1][0].get('href')
 				except IndexError:
 					details_page_url = None
 
@@ -1144,7 +1030,7 @@ def processAssignment(institution, pathThusFar, assignmentURL, session):
 				pages_remaining = False
 
 def processOnlineTestAttempt(institution, session, details_URL, dumpDirectory, attempt_index, student_name, attempt_file_contents):
-	details_page_response = session.get(itslearning_root_url[institution] + details_URL, allow_redirects=True)
+	details_page_response = session.get(its.root_url[institution] + details_URL, allow_redirects=True)
 	details_page_document = fromstring(details_page_response.text)
 	
 	attempt_file_contents += '\n'
@@ -1173,7 +1059,7 @@ def processOnlineTestAttempt(institution, session, details_URL, dumpDirectory, a
 	while len(question_table_body) > 0:
 		for question_element in question_table_body:
 			print('\tSaving question', question_index)
-			question_link = itslearning_root_url[institution] + question_element[0][1].get('href')
+			question_link = its.root_url[institution] + question_element[0][1].get('href')
 			
 			question_title = question_element[1].text_content()
 			attempt_file_contents += 'Question ' + str(question_index) + ': ' + question_title + '\n\n'
@@ -1221,7 +1107,7 @@ def processOnlineTestAttempt(institution, session, details_URL, dumpDirectory, a
 
 					# Special case for relative URL's: drop the It's Learning root URL in front of it
 					if not image_URL.startswith('http'):
-						image_URL = itslearning_root_url[institution] + image_URL
+						image_URL = its.root_url[institution] + image_URL
 
 					filename = download_file(institution, image_URL, attemptDirectory, session)
 					if filename is None:
@@ -1246,11 +1132,11 @@ def processOnlineTestAttempt(institution, session, details_URL, dumpDirectory, a
 				break
 
 		if postback_form is None:
-			raise Error('No postback form found on page!\nURL: ' + details_URL)
+			raise ('No postback form found on page!\nURL: ' + details_URL)
 
 		# Extracting the destination URL from the form action field.
 		# The URL starts with ./, so I'm removing the dot to obtain a complete URL
-		form_action_url = itslearning_root_url[institution] + details_URL
+		form_action_url = its.root_url[institution] + details_URL
 
 		page_index += 1
 
@@ -1449,7 +1335,7 @@ def processFile(institution, pathThusFar, fileURL, session):
 			file_index = index
 			print('\tDownloading version {} of {}.'.format(index+1, len(download_link_indices)))
 		
-		download_file(institution, itslearning_root_url[institution] + file_response.text[link_start_index:link_end_index], pathThusFar, session, file_index)
+		download_file(institution, its.root_url[institution] + file_response.text[link_start_index:link_end_index], pathThusFar, session, file_index)
 
 def processFolder(institution, pathThusFar, folderURL, session, courseIndex, folder_state = [], level = 0, catch_up_state = None):
 	print("\tDumping folder: ", pathThusFar.encode('ascii', 'ignore'))
@@ -1496,35 +1382,35 @@ def processFolder(institution, pathThusFar, folderURL, session, courseIndex, fol
 
 		try: 
 			if item_url.startswith('/Folder'):
-				folderURL = itslearning_folder_base_url[institution] + item_url.split('=')[1]
+				folderURL = its.folder_base_url.format(its.root_url[institution]) + item_url.split('=')[1]
 				processFolder(institution, pathThusFar + "/Folder - " + item_name, folderURL, session, courseIndex, folder_state + [index], level + 1)
 			elif item_url.startswith('/File'):
 				pass
-				processFile(institution, pathThusFar, itslearning_file_base_url[institution] + item_url.split('=')[1], session)
+				processFile(institution, pathThusFar, its.file_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/essay'):
 				pass
-				processAssignment(institution, pathThusFar, itslearning_assignment_base_url[institution] + item_url.split('=')[1], session)
+				processAssignment(institution, pathThusFar, its.assignment_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/note'):
 				pass
-				processNote(institution, pathThusFar, itslearning_note_base_url[institution] + item_url.split('=')[1], session)
+				processNote(institution, pathThusFar, its.note_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/discussion'):
 				pass
-				processDiscussionForum(institution, pathThusFar, itslearning_discussion_base_url[institution] + item_url.split('=')[1], session)
+				processDiscussionForum(institution, pathThusFar, its.discussion_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/weblink'):
 				pass
-				processWeblink(institution, pathThusFar, itslearning_weblink_base_url[institution] + item_url.split('=')[1], item_name, session)
+				processWeblink(institution, pathThusFar, its.weblink_base_url.format(its.root_url[institution]) + item_url.split('=')[1], item_name, session)
 			elif item_url.startswith('/LearningToolElement'):
 				pass
-				processLearningToolElement(institution, pathThusFar, itslearning_learning_tool_base_url[institution] + item_url.split('=')[1], session)
+				processLearningToolElement(institution, pathThusFar, its.learning_tool_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/test'):
 				pass
-				processTest(institution, pathThusFar, itslearning_test_base_url[institution] + item_url.split('=')[1], session)
+				processTest(institution, pathThusFar, its.test_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/picture'):
 				pass
-				processPicture(institution, pathThusFar, itslearning_picture_url[institution].format(item_url.split('=')[1]), session)
+				processPicture(institution, pathThusFar, its.picture_url.format(its.root_url[institution], item_url.split('=')[1]), session)
 			elif item_url.startswith('/Ntt'):
 				pass
-				processOnlineTest(institution, pathThusFar, itslearning_online_test_url[institution].format(item_url.split('=')[1]), item_url.split('=')[1], session)
+				processOnlineTest(institution, pathThusFar, its.online_test_url.format(its.root_url[institution], item_url.split('=')[1]), item_url.split('=')[1], session)
 			else:
 				print('Warning: Skipping unknown URL:', item_url.encode('ascii', 'ignore'))
 		except Exception:
@@ -1548,7 +1434,7 @@ def processFolder(institution, pathThusFar, folderURL, session, courseIndex, fol
 		delay()
 
 def loadMessagingPage(institution, index, session):
-	url = itslearning_new_messaging_api_url[institution].format(index)
+	url = its.new_messaging_api_url.format(its.root_url[institution], index)
 	return json.loads(session.get(url, allow_redirects=True).text)
 
 def processMessaging(institution, pathThusFar, session):
@@ -1595,9 +1481,9 @@ def processMessaging(institution, pathThusFar, session):
 	
 	
 	folderID = 1
-	messaging_response = session.get(old_messaging_api_url[institution].format(folderID), allow_redirects=True)
+	messaging_response = session.get(its.old_messaging_api_url.format(its.root_url[institution], folderID), allow_redirects=True)
 
-	while messaging_response.url != itslearning_not_found[institution]:
+	while messaging_response.url != its.not_found.format(its.root_url[institution]):
 		inbox_document = fromstring(messaging_response.text)
 		inbox_title = inbox_document.get_element_by_id('ctl05_TT').text_content()
 		print('\tAccessing folder {}'.format(inbox_title).encode('ascii', 'ignore'))
@@ -1635,15 +1521,15 @@ def processMessaging(institution, pathThusFar, session):
 						is_its_bug = True
 
 					if not is_its_bug:
-						message_url = itslearning_root_url[institution] + message_element[3][0].get('href')
+						message_url = its.root_url[institution] + message_element[3][0].get('href')
 					else:
 						# Bug caused by having a < character in the recipients name
-						message_url = itslearning_root_url[institution] + message_element[2][0][0][0].get('href')
+						message_url = its.root_url[institution] + message_element[2][0][0][0].get('href')
 					message_response = session.get(message_url, allow_redirects = True)
 					message_document = fromstring(message_response.text)
 
 					# In rare cases a message links to an unauthorized page. I have no idea why.
-					if not message_response.url == itslearning_unauthorized_url[institution]:
+					if not message_response.url == its.unauthorized_url.format(its.root_url[institution]):
 						
 
 						if not is_its_bug:
@@ -1699,7 +1585,7 @@ def processMessaging(institution, pathThusFar, session):
 								if attachment_index != -1:
 									attachment_filename = message_header_element[attachment_index][1][0].text_content()
 									message_attachment_url = message_header_element[attachment_index][1][0].get('href')
-									download_file(institution, itslearning_root_url[institution] + message_attachment_url, attachmentsDirectory, session, index=None, filename=attachment_filename, disableFilenameReencode=True)
+									download_file(institution, its.root_url[institution] + message_attachment_url, attachmentsDirectory, session, index=None, filename=attachment_filename, disableFilenameReencode=True)
 
 						message_file_contents = 'From: ' + message_sender + '\n'
 						message_file_contents = 'To: ' + message_recipient + '\n'
@@ -1752,7 +1638,7 @@ def processMessaging(institution, pathThusFar, session):
 				message_index += 1
 
 			# Move on to the next page
-			found_next_page, messaging_response = loadPaginationPage(old_messaging_api_url[institution].format(folderID), inbox_document)
+			found_next_page, messaging_response = loadPaginationPage(its.old_messaging_api_url.format(its.root_url[institution], folderID), inbox_document)
 
 			if found_next_page:
 				inbox_document = fromstring(messaging_response.text)
@@ -1761,7 +1647,7 @@ def processMessaging(institution, pathThusFar, session):
 				pagesRemain = False
 
 		folderID += 1
-		messaging_response = session.get(old_messaging_api_url[institution].format(folderID), allow_redirects=True)
+		messaging_response = session.get(its.old_messaging_api_url.format(its.root_url[institution], folderID), allow_redirects=True)
 
 def dumpSingleBulletin(institution, raw_page_text, bulletin_element, dumpDirectory, bulletin_index):
 	# Post data
@@ -1810,7 +1696,7 @@ def dumpSingleBulletin(institution, raw_page_text, bulletin_element, dumpDirecto
 			readItemsCount = comment_info['NumberOfPreviouslyReadItemsToDisplay']
 			useLastName = comment_info['UsePersonNameFormatLastFirst']
 
-			complete_comment_url = itslearning_comment_service[institution].format(sourceID, sourceType, commentId, count, readItemsCount, useLastName)
+			complete_comment_url = its.comment_service.format(its.root_url[institution], sourceID, sourceType, commentId, count, readItemsCount, useLastName)
 			additional_comments = json.loads(session.get(complete_comment_url, allow_redirects=True).text)
 
 			delay()
@@ -1868,7 +1754,7 @@ def processBulletins(institution, pathThusFar, courseURL, session, courseID):
 		# Now we keep going until all bulletins have been downloaded
 		while next_bulletin_batch['NeedToShowMore']:
 			print('\tLoading more bulletins')
-			additional_bulletins_response = session.get(itslearning_bulletin_next_url[institution].format(courseID, next_bulletin_batch['BoundaryLightBulletinId'], next_bulletin_batch['BoundaryLightBulletinCreatedTicks']))
+			additional_bulletins_response = session.get(its.root_url[institution] + its.bulletin_next_url.format(courseID, next_bulletin_batch['BoundaryLightBulletinId'], next_bulletin_batch['BoundaryLightBulletinCreatedTicks']))
 			additional_bulletins_document = fromstring(additional_bulletins_response.text)
 
 			for bulletin_element in additional_bulletins_document:
@@ -1980,9 +1866,13 @@ def processProjectBulletins(institution, pathThusFar, pageURL, session):
 		bytesToTextFile(bulletin_file_content.encode('utf-8'), file_path)
 
 def list_courses_or_projects(institution, session, list_page_url, form_string, url_column_index, item_name):
-	course_list_response = session.get(list_page_url[institution], allow_redirects = True)
+	course_list_response = session.get(list_page_url.format(its.root_url[institution]))
 	course_list_page = fromstring(course_list_response.text)
 	course_list_form = course_list_page.forms[0]
+
+	# print(course_list_response.status_code, course_list_response.url)
+	# f = open("./content", 'wb')
+	# f.write(course_list_response.content)
 	
 	found_field = False
 	for form_field in course_list_form.fields:
@@ -2003,7 +1893,7 @@ def list_courses_or_projects(institution, session, list_page_url, form_string, u
 
 	# Part 2: Show all courses
 
-		all_courses_response = session.post(list_page_url[institution], data=course_list_dict, allow_redirects = True)
+		all_courses_response = session.post(list_page_url.format(its.root_url[institution]), data=course_list_dict, allow_redirects = True)
 		all_courses_page = fromstring(all_courses_response.text)
 
 	else:
@@ -2042,7 +1932,7 @@ def list_courses_or_projects(institution, session, list_page_url, form_string, u
 			courseURL = courseTableRowElement[url_column_index][0].get('href').split("=")[1]
 			courseList.append(courseURL)
 			courseNameDict[courseURL] = courseTableRowElement[url_column_index][0][0].text
-		pages_remaining, course_page_response = loadPaginationPage(list_page_url[institution], all_courses_page, 5)
+		pages_remaining, course_page_response = loadPaginationPage(list_page_url.format(its.root_url[institution]), all_courses_page, 5)
 		if pages_remaining:
 			all_courses_page = fromstring(course_page_response.text)
 
@@ -2059,18 +1949,18 @@ def dump_courses_or_projects(institution, session, pathThusFar, itemList, itemNa
 
 			locationType = {'course': 1, 'project': 2}[item_type]
 
-			course_response = session.get(itslearning_course_base_url[institution].format(courseURL, locationType), allow_redirects=True)
+			course_response = session.get(its.course_base_url.format(its.root_url[institution], courseURL, locationType), allow_redirects=True)
 
-			root_folder_url_index = course_response.text.find(itslearning_folder_base_url[institution])
+			root_folder_url_index = course_response.text.find(its.folder_base_url[institution])
 			root_folder_end_index = course_response.text.find("'", root_folder_url_index + 1)
 			root_folder_url = course_response.text[root_folder_url_index:root_folder_end_index]
 
 			if item_type == 'course':
 				course_folder = pathThusFar + '/' + sanitiseFilename(itemNameDict[courseURL])
-				bulletin_url = itslearning_course_bulletin_base_url[institution]
+				bulletin_url = its.course_bulletin_base_url.format(its.root_url[institution])
 			elif item_type == 'project':
 				course_folder = pathThusFar + '/Projects/' + sanitiseFilename(itemNameDict[courseURL])
-				bulletin_url = itslearning_project_bulletin_base_url[institution]
+				bulletin_url = its.project_bulletin_base_url.format(its.root_url[institution])
 
 			try:
 				if item_type == 'course':
@@ -2140,148 +2030,100 @@ if os.path.exists(progress_file_location) and not args.do_listing:
 		state_folder_state = [int(i) for i in file_contents[1].split(', ')]
 		catch_up_directions = [state_course_id, state_folder_state]
 
-with requests.Session() as session:
+session = requests.Session()
+session.headers.update(headers)
 
-	print('Querying Innsida..')
-	response = session.get(innsida, params=innsida_login_parameters, allow_redirects=True)
+institution = 'forsyth'
 
-	login_page = fromstring(response.text)
+print('Querying ADFS..')
 
-	login_form = login_page.forms[0]
+credentials_correct = False
 
-	credentials_correct = False
+print()
+print('----------')
+print('To continue, the script needs to know your FCSS login credentials.')
+print('To do so, type in your FCSS username, press Enter, then type in your password, and press Enter again.')
+print()
+print('NOTE: when the program asks for your password, for your security the characters you type are hidden.')
+print('Just type in your password as you normally would, and press Enter.')
+print()
 
-	print()
-	print('----------')
-	print('To continue, the script needs to know your FEIDE login credentials.')
-	print('To do so, type in your NTNU/FEIDE username, press Enter, then type in your password, and press Enter again.')
-	print()
-	print('Both content from the HiST and NTNU sites is downloaded.')
-	print('Access to each of these will be detected automatically by the program.')
-	print()
-	print('NOTE: when the program asks for your password, for your security the characters you type are hidden.')
-	print('Just type in your password as you normally would, and press Enter.')
-	print()
+is_first_iteration = True
+while not credentials_correct:
+	print('Please enter your FCSS username and password.')
 
-	is_first_iteration = True
-	while not credentials_correct:
-		print('Please enter your NTNU/FEIDE username and password.')
+	if args.username is None and is_first_iteration:
+		username = input('Username: ')
+	else:
+		username = args.username
+	if args.password is None and is_first_iteration:
+		password = getpass.getpass(prompt='Password: ')
+	else:
+		password = args.password
 
-		if args.username is None and is_first_iteration:
-			username = input('Username: ')
-		else:
-			username = args.username
-		if args.password is None and is_first_iteration:
-			password = getpass.getpass(prompt='Password: ')
-		else:
-			password = args.password
-		
-		login_form.fields['feidename'] = username
-		login_form.fields['password'] = password
+	print('Sending login data')
+	try:
+		adfsLogin(
+			session,
+			itslBaseUrl=its.root_url['forsyth'],
+			username=os.environ['USERNAME'],
+			password=os.environ['PASSWORD'],
+			autoLoginUrl=its.autologin_url
+		)
+		credentials_correct = True
+	except Exception as e:
+		continue
 
-		login_form_dict = convert_lxml_form_to_requests(login_form)
+	is_first_iteration = False
 
-		feide_login_submit_url = feide_base_url + login_form.action
+	print('Access detected successfully.')
+	print('Accessing It\'s Learning')
 
-		print('Sending login data')
+	print('Listing courses.')
 
-		relay_response = session.post(feide_login_submit_url, data = login_form_dict)
+	# Part 1: Obtain session-specific form
 
-		if fromstring(relay_response.text).forms[0].action.startswith('?'):
-			print('Incorrect credentials!')
-		else:
-			credentials_correct = True
-		is_first_iteration = False
-
-	innsida_main_page = do_feide_relay(session, relay_response)
-
-	for institution in institutions:
-
-		print('Autodetecting access to', institution.upper())
-
-		has_access_to_institution = False
-		if institution == 'ntnu':
-			try:
-				innsida_outgoing_response = session.get(itslearning_gateway_url[institution], allow_redirects = True)
-				itslearning_main_page = do_feide_relay(session, innsida_outgoing_response)
-				has_access_to_institution = itslearning_login_landing_page[institution] in itslearning_main_page.url
-			except Exception:
-				# If anything unexpected happens, it's likely we've stumbled across a case of being denied access
-				has_access_to_institution = False
-
-		elif institution == 'hist':
-			try:
-				hist_login_page = session.get(itslearning_gateway_url[institution], allow_redirects = True)
-				hist_login_page_document = fromstring(hist_login_page.text)
-				postback_action = 'ctl00$ContentPlaceHolder1$federatedLoginButtons$ctl00$ctl00'
-				hist_postback_response = doPostBack(hist_login_postback_target, postback_action, hist_login_page_document)
-				# HiST does a double 'autosubmit form' relay instead of one.
-				hist_first_relay_response = do_feide_relay(session, hist_postback_response)
-				hist_second_relay_response = do_feide_relay(session, hist_first_relay_response)
-				has_access_to_institution = itslearning_login_landing_page[institution] in hist_second_relay_response.url
-			except Exception:
-				# If anything unexpected happens, it's likely we've stumbled across a case of being denied access
-				has_access_to_institution = False
-
-		if not has_access_to_institution:
-			print('It does not appear you have access to the It\'s Learning site of', institution.upper())
-			print('Skipping to the next one.')
-			continue
-
-		print('Access detected successfully.')
-		print('Accessing It\'s Learning')
-
-		
-
-		print('Listing courses.')
-
-		# Part 1: Obtain session-specific form
-
-		courseList, courseNameDict = list_courses_or_projects(institution, session, itsleaning_course_list, 'ctl26$ctl00', 2, 'courses')
-		
-		print('Found {} courses.'.format(len(courseList)))
-
-		print('Listing projects.')
-
-		projectList, projectNameDict = list_courses_or_projects(institution, session, itslearning_all_projects_url, 'ctl28$ctl00', 1, 'projects')
-
-		print('Found {} projects.'.format(len(projectList)))
-
-
-		# Feature for listing courses and projects which the user has access to. Triggered by a console parameter.
-		if args.do_listing:
-			print()
-			print('The following courses were found:')
-			for courseIndex, courseURL in enumerate(courseList):
-				print('Course {}: {}'.format(courseIndex + 1, courseNameDict[courseURL].encode('ascii', 'ignore')))
-			print()
-			print('The following projects were found:')
-			for courseIndex, courseURL in enumerate(projectList):
-				print('Course {}: {}'.format(courseIndex + 1, projectNameDict[courseURL].encode('ascii', 'ignore')))
-			print()
-			# Skip past the actual dumping
-			continue
-
-		pathThusFar = output_folder_name
-
-		# If it is desirable to skip to a particular course, also skip downloading the messages again
-		if skip_to_course_with_index == 0 and catch_up_directions is None and not args.courses_only and not args.projects_only:
-			processMessaging(institution, pathThusFar, session)
-
-		if not args.messaging_only and not args.courses_only:
-			print('Dumping Projects')
-			dump_courses_or_projects(institution, session, pathThusFar, projectList, projectNameDict, 'project')
-		
-		if not args.messaging_only and not args.projects_only:
-			print('Dumping Courses.')
-			dump_courses_or_projects(institution, session, pathThusFar, courseList, courseNameDict, 'course')
-		
-
-
-		print('All content from the institution site was downloaded successfully!')
-	print('Done. Everything was downloaded successfully!')
-	input('Press Enter to exit.')
-
-
-
+	courseList, courseNameDict = list_courses_or_projects(institution, session, its.course_list, 'ctl26$ctl00', 2, 'courses')
 	
+	print('Found {} courses.'.format(len(courseList)))
+
+	print('Listing projects.')
+
+	projectList, projectNameDict = list_courses_or_projects(institution, session, its.all_projects_url, 'ctl28$ctl00', 1, 'projects')
+
+	print('Found {} projects.'.format(len(projectList)))
+
+
+	# Feature for listing courses and projects which the user has access to. Triggered by a console parameter.
+	if args.do_listing:
+		print()
+		print('The following courses were found:')
+		for courseIndex, courseURL in enumerate(courseList):
+			print('Course {}: {}'.format(courseIndex + 1, courseNameDict[courseURL].encode('ascii', 'ignore')))
+		print()
+		print('The following projects were found:')
+		for courseIndex, courseURL in enumerate(projectList):
+			print('Course {}: {}'.format(courseIndex + 1, projectNameDict[courseURL].encode('ascii', 'ignore')))
+		print()
+		# Skip past the actual dumping
+		continue
+
+	pathThusFar = output_folder_name
+
+	# If it is desirable to skip to a particular course, also skip downloading the messages again
+	if skip_to_course_with_index == 0 and catch_up_directions is None and not args.courses_only and not args.projects_only:
+		processMessaging(institution, pathThusFar, session)
+
+	if not args.messaging_only and not args.courses_only:
+		print('Dumping Projects')
+		dump_courses_or_projects(institution, session, pathThusFar, projectList, projectNameDict, 'project')
+	
+	if not args.messaging_only and not args.projects_only:
+		print('Dumping Courses.')
+		dump_courses_or_projects(institution, session, pathThusFar, courseList, courseNameDict, 'course')
+	
+
+
+	print('All content from the institution site was downloaded successfully!')
+print('Done. Everything was downloaded successfully!')
+input('Press Enter to exit.')
