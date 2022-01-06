@@ -7,7 +7,7 @@ import requests
 
 
 def getFCSSLoginInfo(itslLoginUrl: str, headers):
-    # Forsyth County's ADFS doesn't have a correct SSL certificate so verify has to be off
+    # The  SSL certificate of Forsyth County's ADFS is issued for the wrong domain name so verify needs to be off.
     response = requests.get(
         itslLoginUrl,
         headers=headers,
