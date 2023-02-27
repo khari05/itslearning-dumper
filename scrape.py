@@ -2,6 +2,7 @@
 
 # A dirty script to pull files from it's learning
 # - Bart van Blokland
+# - Updated by Karthik Hari (2023)
 
 # USAGE:
 # 0. Install Python 3.x (including pip) if you haven't already
@@ -35,7 +36,8 @@ from multiprocessing import Queue
 
 import requests
 from requests.exceptions import InvalidURL
-from lxml.html import fromstring, tostring
+from lxml.html.soupparser import fromstring
+from lxml.html import tostring, HtmlElement
 from lxml import etree
 
 # Python std lib imports
@@ -52,6 +54,8 @@ from shutil import rmtree
 from time import sleep
 import getpass
 from urllib.parse import urlparse
+from urllib3.exceptions import InsecureRequestWarning
+from urllib3 import disable_warnings
 # Requires Python 3.4
 from pathlib import Path
 
@@ -64,6 +68,7 @@ from src.parser import makeParser
 # --- SETTINGS ---
 
 parser = makeParser()
+disable_warnings(category=InsecureRequestWarning)
 
 args = parser.parse_args()
 
@@ -78,11 +83,12 @@ rate_limiting_delay_seconds = args.rate_limit
 # File path characters are only deleted from entire/complete file paths
 # I may have missed one of two. 
 invalid_path_characters = [':', ',', '*', '?', '"', '<', '>', '\t', '`', '´', '|']
-invalid_filename_characters = [':', '.', ',', '*', '/', '\\', '?', '"', '<', '>', '\t', '`', '´', '|']
+invalid_filename_characters = [':', ',', '*', '/', '\\', '?', '"', '<', '>', '\t', '`', '´', '|']
 
 # All output files will receive this extension. Since a lot of stuff contains raw HTML, I used HTML
 # as the file type. You may want to change this to .txt though, since many files also contain plaintext bits.
 output_text_extension = args.output_extension
+output_folder_name = args.output_dir
 
 # Use if the program crashed and stopped early. Skips to a course with a specific index
 # If this value is non-zero, also downloading of the messaging inbox will be skipped.
@@ -95,6 +101,7 @@ skip_to_course_with_index = max(args.skip_to_course, (1 if args.courses_only or 
 if not args.do_listing:
 	print('----- It\'s Learning dump script -----')
 	print('Created by: Bart van Blokland (bart.van.blokland@ntnu.no)')
+	print('Updated in 2023 by: Karthik Hari (hello@khari.me)')
 	print()
 	print('Greetings! This script will help you download your content off of It\'s Learning.')
 	print('We\'ll start by selecting a directory where all the files are going to be saved.')
@@ -157,7 +164,9 @@ elif args.recreate_out_dir and os.path.exists(output_folder_name):
 enable_checkpoints = args.enable_checkpoints
 
 # --- CONSTANTS ---
-headers = {'User-Agent': 'Mozilla/5.0'}
+
+# pretend to be a Mac running Firefox
+headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/110.0'}
 
 institutions = ['forsyth']
 
@@ -527,27 +536,35 @@ def processWeblink(institution, pathThusFar, weblinkPageURL, link_title, session
 
 def processLearningToolElement(institution, pathThusFar, elementURL, session):
 	element_response = session.get(elementURL, allow_redirects=True)
-	element_document = fromstring(element_response.text)
+	element_document: HtmlElement = fromstring(element_response.text)
 
 	element_title = element_document.get_element_by_id('ctl00_PageHeader_TT').text
 	element_title = sanitiseFilename(element_title)
-	print('\tDownloaded Learning Tool Element: ', element_title.encode('ascii', 'ignore'))
-
-	dumpDirectory = pathThusFar + '/Learning Tool Element - ' + element_title
-	dumpDirectory = sanitisePath(dumpDirectory)
-	dumpDirectory = makeDirectories(dumpDirectory)
+	print('\tDownloaded Learning Tool Element: ', element_title)
 
 	try:
 		frameSrc = element_document.get_element_by_id('ctl00_ContentPlaceHolder_ExtensionIframe').get('src')
 
 		frame_content_response = session.get(frameSrc, allow_redirects=True)
-		bytesToTextFile(frame_content_response.content, dumpDirectory + '/page_contents' + output_text_extension)
+		frame_document: HtmlElement = fromstring(frame_content_response.content.decode())
 
-		frame_content_document = fromstring(frame_content_response.text)
-		for file_link in frame_content_document.find_class('file-link-link'):
-			link_href = file_link[0].get('href')
-			link_filename = file_link[0].get('download')
-			download_file(institution, link_href, dumpDirectory, session, filename=link_filename)
+		try: # check if this learning tool has a single download link
+			download_link = its.resource_url + frame_document.get_element_by_id('ctl00_ctl00_MainFormContent_DownloadLinkForViewType').get('href')
+			download_file(institution, download_link, pathThusFar, session, filename=element_title)
+
+		except: # it isn't a single file
+			dumpDirectory = pathThusFar + '/Learning Tool Element - ' + element_title
+			dumpDirectory = sanitisePath(dumpDirectory)
+			dumpDirectory = makeDirectories(dumpDirectory)
+
+			bytesToTextFile(frame_content_response.content, dumpDirectory + '/page_contents' + output_text_extension)
+
+			frame_content_document = fromstring(frame_content_response.text)
+			for file_link in frame_content_document.find_class('ccl-iconlink'):
+				link_href = file_link[0].get('href')
+				link_filename = file_link[0].get('download')
+				download_file(institution, link_href, dumpDirectory, session, filename=link_filename)
+
 	except KeyError:
 		print('\tPage appears to have abnormal page structure. Falling back on dumping entire page as-is.')
 		bytesToTextFile(etree.tostring(element_document, pretty_print=True, encoding='utf-8'), dumpDirectory + '/page_contents' + output_text_extension)
@@ -1651,8 +1668,8 @@ def processMessaging(institution, pathThusFar, session):
 
 def dumpSingleBulletin(institution, raw_page_text, bulletin_element, dumpDirectory, bulletin_index):
 	# Post data
-	author = bulletin_element.find_class('itsl-light-bulletins-person-name')[0][0][0].text_content()
-	print('\tBulletin by', author.encode('ascii', 'ignore'))
+	author = bulletin_element.find_class('itsl-light-bulletins-person-name')[0].text_content()
+	print('\tBulletin by', author)
 	post_content = convert_html_content(bulletin_element.find_class('h-userinput itsl-light-bulletins-list-item-text')[0].get('data-text'))
 
 	bulletin_file_content = 'Author: ' + author + '\n\n' + post_content
@@ -1722,6 +1739,7 @@ def processBulletins(institution, pathThusFar, courseURL, session, courseID):
 		is_new_style_bulletins = attribute_value is not None
 	except IndexError:
 		is_new_style_bulletins = False
+
 
 	if is_new_style_bulletins:
 		bulletin_list_element = bulletin_document.get_element_by_id('ctl00_ContentPlaceHolder_DashboardLayout_ctl04_ctl03_CT')[0][0]
@@ -1865,15 +1883,11 @@ def processProjectBulletins(institution, pathThusFar, pageURL, session):
 
 		bytesToTextFile(bulletin_file_content.encode('utf-8'), file_path)
 
-def list_courses_or_projects(institution, session, list_page_url, form_string, url_column_index, item_name):
-	course_list_response = session.get(list_page_url.format(its.root_url[institution]))
+def list_courses_or_projects(institution, session: requests.Session, list_page_url, form_string, url_column_index, item_name):
+	course_list_response = session.get(list_page_url.format(its.root_url[institution]), verify=True)
 	course_list_page = fromstring(course_list_response.text)
 	course_list_form = course_list_page.forms[0]
 
-	# print(course_list_response.status_code, course_list_response.url)
-	# f = open("./content", 'wb')
-	# f.write(course_list_response.content)
-	
 	found_field = False
 	for form_field in course_list_form.fields:
 		if form_field.startswith(form_string):
@@ -1881,8 +1895,8 @@ def list_courses_or_projects(institution, session, list_page_url, form_string, u
 			found_field = True
 
 	if not found_field:
-		print('The script was not able to select all {}. Would you like to continue and only download the {} marked as favourite or active?'.format(item_name.encode('ascii', 'ignore'), item_name.encode('ascii', 'ignore')))
-		print('Type "continue" to only download active or favourited {}. Otherwise, the script will abort.'.format(item_name.encode('ascii', 'ignore')))
+		print('The script was not able to select all {}. Would you like to continue and only download the {} marked as favourite or active?'.format(item_name, item_name))
+		print('Type "continue" to only download active or favourited {}. Otherwise, the script will abort.'.format(item_name))
 		decision = input('Continue? ')
 		if not decision == 'continue':
 			print('Download aborted.')
@@ -1941,7 +1955,7 @@ def list_courses_or_projects(institution, session, list_page_url, form_string, u
 def dump_courses_or_projects(institution, session, pathThusFar, itemList, itemNameDict, item_type):
 	for courseIndex, courseURL in enumerate(itemList):
 		try:
-			print('Dumping {} with ID {} ({} of {}): {}'.format(item_type, courseURL, (courseIndex + 1), len(itemList), itemNameDict[courseURL].encode('ascii', 'ignore')))
+			print('Dumping {} with ID {} ({} of {}): {}'.format(item_type, courseURL, (courseIndex + 1), len(itemList), itemNameDict[courseURL]))
 			if courseIndex + 1 < skip_to_course_with_index:
 				continue
 			if catch_up_directions is not None and courseIndex + 1 < catch_up_directions[0]:
@@ -1951,8 +1965,8 @@ def dump_courses_or_projects(institution, session, pathThusFar, itemList, itemNa
 
 			course_response = session.get(its.course_base_url.format(its.root_url[institution], courseURL, locationType), allow_redirects=True)
 
-			root_folder_url_index = course_response.text.find(its.folder_base_url[institution])
-			root_folder_end_index = course_response.text.find("'", root_folder_url_index + 1)
+			root_folder_url_index = course_response.text.find(its.folder_base_url.format(its.root_url[institution]))
+			root_folder_end_index = course_response.text.find('"', root_folder_url_index + 1)
 			root_folder_url = course_response.text[root_folder_url_index:root_folder_end_index]
 
 			if item_type == 'course':
@@ -2033,6 +2047,7 @@ if os.path.exists(progress_file_location) and not args.do_listing:
 session = requests.Session()
 session.headers.update(headers)
 
+
 institution = 'forsyth'
 
 print('Querying ADFS..')
@@ -2052,12 +2067,16 @@ is_first_iteration = True
 while not credentials_correct:
 	print('Please enter your FCSS username and password.')
 
-	if args.username is None and is_first_iteration:
+	if args.username is None and os.environ['USERNAME'] is None and is_first_iteration:
 		username = input('Username: ')
+	elif args.username is None:
+		username = os.environ['USERNAME']
 	else:
 		username = args.username
-	if args.password is None and is_first_iteration:
+	if args.password is None and os.environ['PASSWORD'] is None and is_first_iteration:
 		password = getpass.getpass(prompt='Password: ')
+	elif args.password is None:
+		password = os.environ['PASSWORD']
 	else:
 		password = args.password
 
@@ -2066,8 +2085,8 @@ while not credentials_correct:
 		adfsLogin(
 			session,
 			itslBaseUrl=its.root_url['forsyth'],
-			username=os.environ['USERNAME'],
-			password=os.environ['PASSWORD'],
+			username=username,
+			password=password,
 			autoLoginUrl=its.autologin_url
 		)
 		credentials_correct = True
@@ -2075,35 +2094,31 @@ while not credentials_correct:
 		continue
 
 	is_first_iteration = False
+	session.verify = True # turn SSL verification on since it is off during login w/ FCSS ADFS
 
 	print('Access detected successfully.')
-	print('Accessing It\'s Learning')
+	print('Accessing It\'slearning')
 
-	print('Listing courses.')
+	print('Finding courses.')
 
 	# Part 1: Obtain session-specific form
 
-	courseList, courseNameDict = list_courses_or_projects(institution, session, its.course_list, 'ctl26$ctl00', 2, 'courses')
-	
+	courseList, courseNameDict = list_courses_or_projects(institution, session, its.course_list, 'ctl25$ctl00', 2, 'courses')
+
 	print('Found {} courses.'.format(len(courseList)))
 
-	print('Listing projects.')
-
-	projectList, projectNameDict = list_courses_or_projects(institution, session, its.all_projects_url, 'ctl28$ctl00', 1, 'projects')
-
-	print('Found {} projects.'.format(len(projectList)))
-
+	# ? I legitimately don't think I have ever used the Itslearning projects feature
+	# ? Maybe they discontinued it at some point in the last 6 years... -k
+	# print('Listing projects.')
+	# projectList, projectNameDict = list_courses_or_projects(institution, session, its.all_projects_url, 'ctl28$ctl00', 1, 'projects')
+	# print('Found {} projects.'.format(len(projectList)))
 
 	# Feature for listing courses and projects which the user has access to. Triggered by a console parameter.
 	if args.do_listing:
 		print()
 		print('The following courses were found:')
 		for courseIndex, courseURL in enumerate(courseList):
-			print('Course {}: {}'.format(courseIndex + 1, courseNameDict[courseURL].encode('ascii', 'ignore')))
-		print()
-		print('The following projects were found:')
-		for courseIndex, courseURL in enumerate(projectList):
-			print('Course {}: {}'.format(courseIndex + 1, projectNameDict[courseURL].encode('ascii', 'ignore')))
+			print('Course {}: {}'.format(courseIndex + 1, courseNameDict[courseURL]))
 		print()
 		# Skip past the actual dumping
 		continue
@@ -2114,16 +2129,11 @@ while not credentials_correct:
 	if skip_to_course_with_index == 0 and catch_up_directions is None and not args.courses_only and not args.projects_only:
 		processMessaging(institution, pathThusFar, session)
 
-	if not args.messaging_only and not args.courses_only:
-		print('Dumping Projects')
-		dump_courses_or_projects(institution, session, pathThusFar, projectList, projectNameDict, 'project')
-	
 	if not args.messaging_only and not args.projects_only:
 		print('Dumping Courses.')
 		dump_courses_or_projects(institution, session, pathThusFar, courseList, courseNameDict, 'course')
-	
-
 
 	print('All content from the institution site was downloaded successfully!')
-print('Done. Everything was downloaded successfully!')
+
+	print('Done. Everything was downloaded successfully!')
 input('Press Enter to exit.')

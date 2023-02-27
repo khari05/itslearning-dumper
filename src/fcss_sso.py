@@ -1,13 +1,32 @@
 # a short script to produce a Session object that is authenticated
 # into Forsyth County's ADFS and logged into itslearning
-# - Karthik Hari
+#
+#  Copyright (c) 2023 Karthik Hari (github.com/khari05)
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import re
 from urllib.parse import parse_qs
 import requests
 
-
 def getFCSSLoginInfo(itslLoginUrl: str, headers):
-    # The  SSL certificate of Forsyth County's ADFS is issued for the wrong domain name so verify needs to be off.
+    # ! The  SSL certificate of Forsyth County's ADFS is issued for the wrong domain name so verify needs to be off.
     response = requests.get(
         itslLoginUrl,
         headers=headers,
@@ -57,7 +76,7 @@ def adfsLogin(session: requests.Session, itslBaseUrl: str, username: str, passwo
     res = session.get(
         autoLoginUrl.format(itslBaseUrl),
         allow_redirects=True,
-        verify=False
+        verify=False # ! redirects to ADFS then back to itsl to sign in
     )
 
     # Allow itslearning to send itself data
@@ -70,15 +89,9 @@ def adfsLogin(session: requests.Session, itslBaseUrl: str, username: str, passwo
             formdata[m[0]] = m[1]
         endpoint = re.search(r'action="(.+?)"', resText).group(1)
 
-        # print(formdata)
-        # print(f'posting to {endpoint}')
-
         res = session.post(
             endpoint,
             data=formdata,
-            allow_redirects=True
+            allow_redirects=True,
+            verify=True # WITHIN ITSL, set our session to verify certificates again
         )
-
-    # print(res.status_code, res.url)
-    # f = open("./content", 'wb')
-    # f.write(res.content)

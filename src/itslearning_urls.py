@@ -3,6 +3,8 @@ root_url = {
     'forsyth': 'https://forsyth.itslearning.com'
 }
 
+resource_url = 'https://resource.itslearning.com'
+
 autologin_url = '{}/elogin/autologin.aspx'
 course_list = '{}/Course/AllCourses.aspx'
 course_base_url = '{}/ContentArea/ContentArea.aspx?LocationID={}&LocationType={}'
