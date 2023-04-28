@@ -66,6 +66,8 @@ def adfsLogin(session: requests.Session, itslBaseUrl: str, username: str, passwo
         verify=False,
     )
 
+    # TODO: Use an account with 2FA to allow logging into accounts that require 2-factor auth
+
     if '<span id="errorText"' in str(res.content):
         error = re.search(
             r'<span id="errorText" for="" aria-live="assertive" role="alert">(.+?)</span>', str(res.content)).groups(1)[0]

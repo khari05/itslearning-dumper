@@ -325,8 +325,12 @@ def download_file(institution, url, destination_directory, session, index=None, 
 	# Special case where the server puts slashes in the file name
 	# sanitiseFilename() cuts away too many characters here.
 	filename = filename.replace('/', '')
-	
-	print('\tDownloaded', filename.encode('ascii', 'ignore'))
+
+	# check if it downloads a PDF without assigning a file extension -k
+	if file_download_response.content.startswith(b'%PDF') and not filename.lower().endswith('.pdf'):
+		filename = filename + '.pdf'
+
+	print('\tDownloaded', filename)
 	if not os.path.exists(destination_directory):
 		destination_directory = makeDirectories(destination_directory)
 
@@ -540,7 +544,6 @@ def processLearningToolElement(institution, pathThusFar, elementURL, session):
 
 	element_title = element_document.get_element_by_id('ctl00_PageHeader_TT').text
 	element_title = sanitiseFilename(element_title)
-	print('\tDownloaded Learning Tool Element: ', element_title)
 
 	try:
 		frameSrc = element_document.get_element_by_id('ctl00_ContentPlaceHolder_ExtensionIframe').get('src')
@@ -553,6 +556,7 @@ def processLearningToolElement(institution, pathThusFar, elementURL, session):
 			download_file(institution, download_link, pathThusFar, session, filename=element_title)
 
 		except: # it isn't a single file
+			print('\tDownloaded Learning Tool Element: ', element_title)
 			dumpDirectory = pathThusFar + '/Learning Tool Element - ' + element_title
 			dumpDirectory = sanitisePath(dumpDirectory)
 			dumpDirectory = makeDirectories(dumpDirectory)
@@ -563,6 +567,7 @@ def processLearningToolElement(institution, pathThusFar, elementURL, session):
 			for file_link in frame_content_document.find_class('ccl-iconlink'):
 				link_href = file_link[0].get('href')
 				link_filename = file_link[0].get('download')
+				if link_filename is None: continue
 				download_file(institution, link_href, dumpDirectory, session, filename=link_filename)
 
 	except KeyError:
@@ -1355,7 +1360,7 @@ def processFile(institution, pathThusFar, fileURL, session):
 		download_file(institution, its.root_url[institution] + file_response.text[link_start_index:link_end_index], pathThusFar, session, file_index)
 
 def processFolder(institution, pathThusFar, folderURL, session, courseIndex, folder_state = [], level = 0, catch_up_state = None):
-	print("\tDumping folder: ", pathThusFar.encode('ascii', 'ignore'))
+	print("\tDumping folder: ", pathThusFar)
 	pathThusFar = sanitisePath(pathThusFar)
 	if not os.path.exists(pathThusFar):
 		pathThusFar = makeDirectories(pathThusFar)
@@ -1400,14 +1405,14 @@ def processFolder(institution, pathThusFar, folderURL, session, courseIndex, fol
 		try: 
 			if item_url.startswith('/Folder'):
 				folderURL = its.folder_base_url.format(its.root_url[institution]) + item_url.split('=')[1]
-				processFolder(institution, pathThusFar + "/Folder - " + item_name, folderURL, session, courseIndex, folder_state + [index], level + 1)
+				processFolder(institution, pathThusFar + "/Folder - " + sanitiseFilename(item_name), folderURL, session, courseIndex, folder_state + [index], level + 1)
 			elif item_url.startswith('/File'):
 				pass
 				processFile(institution, pathThusFar, its.file_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/essay'):
 				pass
 				processAssignment(institution, pathThusFar, its.assignment_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
-			elif item_url.startswith('/note'):
+			elif item_url.startswith('/Note'):
 				pass
 				processNote(institution, pathThusFar, its.note_base_url.format(its.root_url[institution]) + item_url.split('=')[1], session)
 			elif item_url.startswith('/discussion'):
@@ -1668,7 +1673,7 @@ def processMessaging(institution, pathThusFar, session):
 
 def dumpSingleBulletin(institution, raw_page_text, bulletin_element, dumpDirectory, bulletin_index):
 	# Post data
-	author = bulletin_element.find_class('itsl-light-bulletins-person-name')[0].text_content()
+	author = bulletin_element.find_class('ccl-iconbutton h-fnt-bd h-underline h-noindent')[0].values()[1]
 	print('\tBulletin by', author)
 	post_content = convert_html_content(bulletin_element.find_class('h-userinput itsl-light-bulletins-list-item-text')[0].get('data-text'))
 
@@ -1711,10 +1716,10 @@ def dumpSingleBulletin(institution, raw_page_text, bulletin_element, dumpDirecto
 			# Try to get all at once
 			count = comment_info['DataSource']['VirtualCount']
 			readItemsCount = comment_info['NumberOfPreviouslyReadItemsToDisplay']
-			useLastName = comment_info['UsePersonNameFormatLastFirst']
+			# useLastName = comment_info['UsePersonNameFormatLastFirst']
 
-			complete_comment_url = its.comment_service.format(its.root_url[institution], sourceID, sourceType, commentId, count, readItemsCount, useLastName)
-			additional_comments = json.loads(session.get(complete_comment_url, allow_redirects=True).text)
+			complete_comment_url = its.comment_service.format(its.root_url[institution], sourceID, sourceType, commentId, count, readItemsCount)
+			additional_comments = json.loads(session.get(complete_comment_url, allow_redirects=True).content.decode())
 
 			delay()
 
@@ -1772,7 +1777,7 @@ def processBulletins(institution, pathThusFar, courseURL, session, courseID):
 		# Now we keep going until all bulletins have been downloaded
 		while next_bulletin_batch['NeedToShowMore']:
 			print('\tLoading more bulletins')
-			additional_bulletins_response = session.get(its.root_url[institution] + its.bulletin_next_url.format(courseID, next_bulletin_batch['BoundaryLightBulletinId'], next_bulletin_batch['BoundaryLightBulletinCreatedTicks']))
+			additional_bulletins_response = session.get(its.bulletin_next_url.format(its.root_url[institution], courseID, next_bulletin_batch['BoundaryLightBulletinId'], next_bulletin_batch['BoundaryLightBulletinActiveFromTicks']))
 			additional_bulletins_document = fromstring(additional_bulletins_response.text)
 
 			for bulletin_element in additional_bulletins_document:
